@@ -1,0 +1,44 @@
+services:
+  nats:
+    image: nats:2.10-alpine
+    ports:
+      - "4222:4222"
+      - "8222:8222"
+    volumes:
+      - nats_data:/var/lib/nats
+
+  api:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    ports:
+      - "8080:8080"
+    environment:
+      PORT: 8080
+      DB_PATH: /app/data/tenant.db
+      NATS_URL: nats://nats:4222
+      LOG_LEVEL: INFO
+    volumes:
+      - sqlite_data:/app/data
+    depends_on:
+      - nats
+
+  worker-sim:
+    build:
+      context: .
+      dockerfile: Dockerfile.worker
+    environment:
+      PORT: 8081
+      DB_PATH: /app/data/tenant.db
+      NATS_URL: nats://nats:4222
+      FAIL_RATE: 0.2
+      MIN_DELAY_MS: 500
+      MAX_DELAY_MS: 3000
+    volumes:
+      - sqlite_data:/app/data
+    depends_on:
+      - nats
+
+volumes:
+  nats_data:
+  sqlite_data:
