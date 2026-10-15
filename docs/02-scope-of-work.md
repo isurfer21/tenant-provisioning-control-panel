@@ -1,204 +1,771 @@
-# Scope of Work — Tenant Provisioning Control Plane
+# Scope of Work — Tenant Provisioning Control Plane (Revised)
 
-**Language**: Go  
-**Primary stack**: Standard library `net/http` or `gin`, SQLite, NATS JetStream  
-**Deployment**: Docker Compose (single `docker compose up` boots everything)
+**Language:** Go  
+**Primary Stack:** Gin, SQLite, NATS JetStream  
+**Deployment:** Docker Compose (`docker compose up` boots complete system)  
+**Architecture Style:** Control Plane + Worker Simulator + Event-Driven Processing
 
 ---
 
-## 1. Project Structure
+# 1. Objective
+
+Build a multi-tenant SaaS Control Plane that:
+
+1. Creates and manages tenant lifecycles.
+2. Publishes asynchronous provisioning tasks.
+3. Simulates worker processing through a message broker.
+4. Tracks task progress.
+5. Guarantees concurrency correctness.
+6. Supports idempotent message consumption.
+7. Survives restarts.
+8. Demonstrates production-grade asynchronous workflow patterns.
+
+---
+
+# 2. High-Level Architecture
+
+```
+                        +-------------------+
+                        |     REST API      |
+                        |  Control Plane    |
+                        +---------+---------+
+                                  |
+                       Creates Tenant + Task
+                                  |
+                                  v
+                        +-------------------+
+                        |     SQLite DB     |
+                        | Tenant / Task     |
+                        | Outbox Events     |
+                        +---------+---------+
+                                  |
+                     Publish After Commit Only
+                                  |
+                                  v
+                       +--------------------+
+                       | NATS JetStream     |
+                       | task_outbound      |
+                       | task_progress      |
+                       +---------+----------+
+                                 |
+                                 v
+                      +---------------------+
+                      | Worker Simulator    |
+                      | CLI Process         |
+                      +----------+----------+
+                                 |
+                        Progress Updates
+                                 |
+                                 v
+                      +---------------------+
+                      | Message Consumer    |
+                      | Idempotent Handler  |
+                      +---------------------+
+```
+
+---
+
+# 3. Project Structure
 
 ```
 tenant-provisioning-control-plane/
-├── docker-compose.yml          # Boots NATS + the Go service + worker simulator
-├── Dockerfile                  # Multi-stage build: builder → minimal alpine image
-├── Makefile                    # Single command boot (make up) and test (make test)
-├── README.md                   # Setup docs, API examples, design decisions
+
+├── docker-compose.yml
+├── Dockerfile
+├── Makefile
+├── README.md
+
 ├── cmd/
-│   ├── server/main.go          # HTTP service entry-point (health, routers, signal handling)
-│   └── worker-sim/main.go      # Worker simulator CLI (accepts --fail-rate, --min-delay-ms, --max-delay-ms)
+│   ├── server/
+│   │   └── main.go
+│   └── worker-sim/
+│       └── main.go
+
 ├── internal/
-│   ├── model/                  # Domain types: Tenant, Task, enums for status
-│   │   ├── tenant.go           # Tenant struct + validation rules (slug regex, etc.)
-│   │   └── task.go             # Task struct + lifecycle states
-│   ├── store/                  # Persistence layer
-│   │   ├── store.go            # Interface definition (TenantStore, TaskStore)
-│   │   └── sqlite.go           # SQLite implementation using sqlc or raw database/sql.
-│   ├── broker/                 # Message broker abstraction
-│   │   ├── broker.go           # Interface (ProduceTask, ConsumeProgress, BindErrorHandler)
-│   │   └── nats_impl.go        # NATS JetStream producer & consumer implementation
-│   ├── api/                    # HTTP layer — all REST endpoints
-│   │   ├── tenant_handler.go   # CRUD + state-machine guards: POST/PATCH/DELETE tenants
-│   │   ├── task_handler.go     # Read-only list/get for tasks
-│   │   └── router.go           # Route registration, middleware (logging, panic recovery)
-│   ├── lifecycle/              # Tenant task lifecycle & state machine implementation
-│   │   ├── tenant_fsm.go       # Validate transitions, apply terminal outcomes.
-│   │   └── optimistic_lock.go  # Version-based concurrency protection
-│   └── idempotency/           # Idempotent message consumer logic
-│       └── consumer.go         # Deduplication map + stale-update rejection
-├── testdata/                   # Fixture seeds, sample payloads, curl scripts for scenarios
-└── .github/                    # If desired: CI workflow (linting + tests on push)
+
+│   ├── model/
+│   │   ├── tenant.go
+│   │   ├── task.go
+│   │   └── event.go
+
+│   ├── store/
+│   │   ├── sqlite.go
+│   │   ├── tenant_repository.go
+│   │   ├── task_repository.go
+│   │   └── outbox_repository.go
+
+│   ├── api/
+│   │   ├── tenant_handler.go
+│   │   ├── task_handler.go
+│   │   └── router.go
+
+│   ├── service/
+│   │   ├── tenant_service.go
+│   │   ├── task_service.go
+│   │   └── outbox_service.go
+
+│   ├── lifecycle/
+│   │   ├── tenant_fsm.go
+│   │   ├── task_fsm.go
+│   │   └── optimistic_lock.go
+
+│   ├── broker/
+│   │   ├── publisher.go
+│   │   ├── consumer.go
+│   │   └── jetstream.go
+
+│   ├── idempotency/
+│   │   └── consumer.go
+
+│   ├── outbox/
+│   │   └── dispatcher.go
+
+│   └── middleware/
+│       ├── logging.go
+│       ├── recovery.go
+│       └── request_id.go
+
+├── migrations/
+│   ├── 001_init.sql
+│   ├── 002_outbox.sql
+│   └── 003_processed_events.sql
+
+├── tests/
+│   ├── unit/
+│   ├── integration/
+│   └── concurrency/
+
+└── .github/workflows/
 ```
 
 ---
 
-## 2. REST API Contract
+# 4. Domain Model
 
-### Tenants — `POST /v1/tenants`
+## Tenant
 
-| Aspect      | Detail                                                              |
-| ----------- | ------------------------------------------------------------------- |
-| Method      | `POST`                                                              |
-| URL         | `/v1/tenants`                                                       |
-| Request     | `{ name: string }` (slug optional, server-generated if omitted)    |
-| Response    | 201 Created — `{ ... tenant fields including status="provisioning" ...}` |
-|             | 409 Conflict — `{"error":"tenant_already_exists", ...}`            |
+```json
+{
+  "id": "uuid",
+  "slug": "customer-a",
+  "name": "Customer A",
+  "status": "active",
+  "version": 3,
+  "created_at": "...",
+  "updated_at": "..."
+}
+```
 
-### Tenants GET `/v1/tenants`
+### Tenant Rules
 
-| Aspect      | Detail                                                              |
-| ----------- | ------------------------------------------------------------------- |
-| Method      | `GET`                                                               |
-| URL         | `/v1/tenants?status=active&page=1&per_page=20`                    |
-| Response    | 200 OK — `{ items: [ ... ], pagination: { total, next_cursor } }` |
+|Property|Rule|
+|---|---|
+|id|Server generated UUID|
+|slug|Required|
+|slug|Regex: `^[a-z][-a-z0-9]{1,26}[a-z0-9]$`|
+|slug|Unique forever, including destroyed tenants|
+|name|Non-empty|
+|version|Increment on every mutation|
+|timestamps|ISO8601 UTC with milliseconds|
 
-### Tenant GET `/v1/tenants/:id`
+### Concurrency Requirement
 
-| Aspect      | Detail                                                    |
-| ----------- | --------------------------------------------------------- |
-| Method      | `GET`                                                     |
-| URL         | `/v1/tenants/{tenantId}`                                |
-| Response    | 200 OK — tenant object                                  |
-|             | 404 Not Found — `{"error":"tenant_not_found", ...}`     |
-
-### Tenant PATCH `/v1/tenants/:id`
-
-| Aspect      | Detail                                                            |
-| ----------- | ----------------------------------------------------------------- |
-| Method      | `PATCH`                                                           |
-| URL         | `/v1/tenants/{tenantId}?version=3`                              |
-| Request     | `{ name: string }` (partial update)                             |
-| Response    | 200 OK — updated tenant, status may be `"updating"`              |
-|             | 409 Conflict — `{"error":"tenant_version_conflict", ...}`        |
-|             | 422 Unprocessable Entity — `{"error":"tenant_update_not_allowed" ...}` (from invalid state transition) |
-
-### Tenant DELETE `/v1/tenants/:id`
-
-| Aspect      | Detail                                                             |
-| ----------- | ------------------------------------------------------------------ |
-| Method      | `DELETE`                                                           |
-| URL         | `/v1/tenants/{tenantId}`                                         |
-| Response    | 200 OK — deleted tenant, status may be `"destroying"`             |
-|             |   403 Forbidden (status != `active` or `failed`)                  |
-|             |   404 Not Found                                                   |
-
-### Tasks GET `/v1/tenants/:id/tasks?page=1&per_page=20`
-
-| Aspect      | Detail                                                    |
-| ----------- | --------------------------------------------------------- |
-| Method      | `GET`                                                     |
-| URL         | `/v1/tenants/{tenantId}/tasks`                          |
-| Response    | 200 OK — list of tasks for tenant (read-only)           |
-
-### Task GET `/v1/tasks/:id`
-
-| Aspect      | Detail                                                    |
-| ----------- | --------------------------------------------------------- |
-| Method      | `GET`                                                     |
-| URL         | `/v1/tasks/{taskId}`                                    |
-| Response    | 200 OK — task object                                    |
-|             | 404 Not Found — `{"error":"task_not_found", ...}`       |
-
-### Health Check
-
-| Aspect      | Detail                                                    |
-| ----------- | --------------------------------------------------------- |
-| Method      | `GET`                                                     |
-| URL         | `/healthz`                                                |
-| Response    | 200 OK — `{"status": "ok"}`                             |
+Concurrent creates using the same slug:
+```
+Request A -> SUCCESS
+Request B -> tenant_already_exists
+```
+Exactly one success is allowed.
 
 ---
 
-## 3. Error Catalog (machine-readable)
+## Task
+```json
+{
+  "id": "uuid",
+  "type": "deploy",
+  "tenant_id": "uuid",
+  "status": "accepted",
+  "created_at": "...",
+  "updated_at": "..."
+}
+```
 
-| `code`                       | HTTP status | Triggering condition                                            |
-| ---------------------------- | ----------- | --------------------------------------------------------------- |
-| `tenant_not_found`           | 404         | GET/PATCH/DELETE by non-existent ID                             |
-| `tenant_already_exists`      | 409         | POST with slug colliding an existing or destroyed tenant        |
-| `tenant_update_not_allowed`  | 422         | PATCH from invalid state (not `active`)                         |
-| `tenant_version_conflict`    | 409         | PATCH with wrong `version` query param                          |
-| `task_not_found`             | 404         | GET `/v1/tasks/{taskId}` missing                               |
-| `invalid_request`            | 422         | Validation failure (empty name, bad slug, bad version number)   |
+### Task Types
+```
+deploy
+update
+destroy
+```
 
-All errors share this shape:
+### Task Status
+```
+accepted
+in_progress
+done
+failed
+```
+
+---
+
+# 5. State Machines
+
+## Task FSM
+
+```
+accepted
+    |
+    v
+in_progress
+   / \
+  v   v
+done failed
+```
+
+### Rules
+
+```
+accepted -> in_progress
+in_progress -> done
+in_progress -> failed
+
+done = terminal
+failed = terminal
+```
+
+No transition may regress state.
+
+---
+
+## Tenant FSM
+
+```
+provisioning -> active      (deploy done)
+provisioning -> failed      (deploy failed)
+
+active       -> updating    (PATCH)
+updating     -> active      (update done)
+updating     -> failed      (update failed)
+
+active       -> destroying  (DELETE)
+failed       -> destroying  (DELETE)
+
+destroying   -> destroyed   (destroy done)
+destroying   -> failed      (destroy failed)
+```
+
+### Invalid Transitions
+
+Rejected with:
 ```json
 {
   "error": {
-    "code": "tenant_version_conflict",
-    "message": "Concurrent mutation detected; please refresh and retry",
-    "request_id": "abc-123"
+    "code": "tenant_update_not_allowed"
   }
 }
 ```
 
 ---
 
-## 4. Message Broker — NATS JetStream Streams & Consumers
+# 6. Open Task Rule
 
-| Stream                    | Subject Pattern                        | Purpose                            |
-| ------------------------- | -------------------------------------- | ---------------------------------- |
-| `task_outbound`           | `tasks.create.*`                       | Control plane → worker (publishes new deploy/update/destroy tasks) |
-| `task_progress`           | `tasks.progress.*`                     | Worker → control plane (progress updates: accepted → in_progress → done/failed) |
+A tenant may have:
+```
+MAX 1 OPEN TASK
+```
+Open states:
+```
+accepted
+in_progress
+```
+Examples:
+```
+Tenant ACTIVE
+   -> PATCH
+   -> UPDATE TASK CREATED
 
-Each stream has a single durable consumer per tenant (for ordering within the same task lifecycle).
+Tenant UPDATING
+   -> PATCH
+   -> REJECT
+```
 
-**Producer envelope**:
+No additional mutation is allowed while another task is open.
+
+---
+
+# 7. REST API
+
+## Tenants
+
+### POST /v1/tenants
 ```json
 {
-  "type": "task_created",
-  "event_id": "<task.id>",
+  "name": "Customer A",
+  "slug": "customer-a"
+}
+```
+
+Creates:
+```
+Tenant(status=provisioning)
+Task(type=deploy,status=accepted)
+```
+Returns:
+```
+201 Created
+```
+Possible Errors
+```
+409 tenant_already_exists
+422 invalid_request
+```
+
+---
+
+### GET /v1/tenants
+
+Filtering:
+```
+status
+page
+per_page
+```
+Returns paginated list.
+
+---
+
+### GET /v1/tenants/{id}
+
+Returns tenant.
+
+Possible errors:
+```
+404 tenant_not_found
+```
+
+---
+
+### PATCH /v1/tenants/{id}?version=3
+
+Allowed only from:
+```
+active
+```
+Creates:
+```
+update task
+tenant -> updating
+```
+Possible errors:
+```
+404 tenant_not_found
+409 tenant_version_conflict
+422 tenant_update_not_allowed
+```
+
+---
+
+### DELETE /v1/tenants/{id}
+
+Allowed from:
+```
+active
+failed
+```
+Creates:
+```
+destroy task
+tenant -> destroying
+```
+Possible errors:
+```
+404 tenant_not_found
+422 tenant_update_not_allowed
+```
+
+---
+
+# 8. Task APIs
+
+## GET /v1/tasks/{taskId}
+
+Retrieve task details.
+
+---
+
+## GET /v1/tenants/{tenantId}/tasks
+
+List tenant tasks.
+
+Filters:
+```
+status
+type
+page
+per_page
+```
+Tasks are read-only.
+
+---
+
+# 9. Error Contract
+
+```json
+{
+  "error": {
+    "code": "tenant_version_conflict",
+    "message": "Concurrent modification detected",
+    "request_id": "req-123"
+  }
+}
+```
+
+Supported Codes:
+
+```
+tenant_not_found
+tenant_already_exists
+tenant_update_not_allowed
+tenant_version_conflict
+task_not_found
+invalid_request
+```
+
+---
+
+# 10. Transactional Outbox Pattern
+
+## Requirement
+
+Task events MUST NOT be published before database commit.
+
+---
+
+### Transaction Flow
+
+```
+BEGIN TX
+
+Insert Tenant
+Insert Task
+Insert Outbox Event
+
+COMMIT
+
+Publish Event
+Mark Outbox Published
+```
+
+Guarantees:
+
+```
+No event on rollback
+No missing task for emitted event
+No emitted event without persisted record
+```
+
+---
+
+# 11. Messaging Design
+
+## Stream: task_outbound
+
+Control Plane → Worker
+
+Subject:
+
+```
+tasks.create.*
+```
+
+Payload:
+
+```json
+{
+  "event_id": "<task_id>",
+  "event_type": "task_created",
   "data": {
     "id": "...",
-    "type": "deploy|update|destroy",
     "tenant_id": "...",
+    "type": "deploy",
     "status": "accepted"
   }
 }
 ```
 
-**Consumer envelope**:
+---
+
+## Stream: task_progress
+
+Worker → Control Plane
+
+Subject:
+```
+tasks.progress.*
+```
+
+Payload:
+
 ```json
 {
-  "kind": "task_progress_update",
-  "event_id": "<unique-uuid-per-delivery>",      // idempotency key
+  "event_id": "progress-event-uuid",
   "data": {
-    "task_id": "...",                            // stable reference to the task
-    "status":         "in_progress|done|failed"
-    "updated_at":     "2025-..."
+    "task_id": "...",
+    "status": "in_progress"
   }
 }
 ```
 
 ---
 
-## 5. Worker Simulator — CLI Flags
+# 12. Idempotent Consumer
 
-| Flag             | Type   | Default      | Description                                            |
-| ---------------- | ------ | ------------ | ------------------------------------------------------ |
-| `--fail-rate`    | float  | `0.0`        | Probability of task failure (0.0 = never, 1.0 = always) |
-| `--min-delay-ms` | int    | `200`       | Minimum sleep before responding (simulated work time)   |
-| `--max-delay-ms` | int    | `2000`      | Maximum sleep before responding                         |
-| `--broker-url`   | string | `nats://localhost:4222` | NATS connection URL                              |
+Every progress message contains:
+```
+event_id
+```
+Used as idempotency key.
+
+### Processed Events Table
+```sql
+processed_events
+(
+    event_id TEXT PRIMARY KEY,
+    processed_at DATETIME
+);
+```
+
+Rules:
+```
+Duplicate event -> Ignore
+
+First receipt -> Apply
+
+Second receipt -> No-op
+```
 
 ---
 
-## 6. Quality Gates (via Makefile / Docker)
+# 13. Order-Tolerant Processing
 
-| Gate              | Tool               | Command                           |
-| ----------------- | ------------------ | --------------------------------- |
-| Formatting        | `gofmt -s -w .`    | `make fmt`                          |
-| Static analysis   | `staticcheck ./...` | `make lint`                        |
-| Security scanner  | `trivy fs --severity HIGH,CRITICAL .` | `make security` (optional) |
-| Unit tests        | `go test -race -count=1 ./...`    | `make test`                   |
-| Integration tests | `./test/integration/run.sh`       | `make integration-test`      |
-| Full CI           | `make ci`          | Formatter + linter + security scan + unit + integration
+Consumer must never regress state.
+
+Example:
+```
+done arrives
+then in_progress arrives
+```
+
+Result:
+```
+keep done
+ignore stale event
+```
+
+Examples:
+```
+done      -> ignore future updates
+failed    -> ignore future updates
+```
+
+---
+
+# 14. Message Reliability
+
+## Retry Strategy
+
+```
+Exponential backoff
+
+1s
+2s
+4s
+8s
+16s
+```
+
+For transient failures.
+
+---
+
+## Poison Messages
+
+Malformed events:
+```
+Log error
+Move to DLQ
+Continue consuming
+```
+Consumer must never crash.
+
+---
+
+# 15. Worker Simulator
+
+CLI:
+```
+worker-sim </span>
+  --fail-rate=0.2 </span>
+  --min-delay-ms=500 </span>
+  --max-delay-ms=3000
+```
+### Behaviour
+
+```
+Receive accepted task
+
+Publish:
+1. in_progress
+
+Then:
+2. done OR failed
+```
+
+Failure probability controlled by:
+```
+--fail-rate
+```
+
+---
+
+# 16. Concurrency Requirements
+
+## Requirement 1
+
+Two parallel PATCH requests:
+```
+version=3
+version=3
+```
+
+Expected:
+```
+One succeeds
+One fails with tenant_version_conflict
+```
+
+---
+
+## Requirement 2
+
+Two parallel tenant creates:
+```
+slug=my-tenant
+slug=my-tenant
+```
+
+Expected:
+```
+One succeeds
+One returns tenant_already_exists
+```
+
+---
+
+# 17. Database Schema
+
+### tenants
+```
+id
+slug UNIQUE
+name
+status
+version
+created_at
+updated_at
+```
+### tasks
+```
+id
+tenant_id
+type
+status
+created_at
+updated_at
+```
+### outbox_events
+```
+id
+aggregate_id
+payload
+published
+created_at
+```
+### processed_events
+```
+event_id
+processed_at
+```
+
+---
+
+# 18. Testing Scope
+
+## Unit Tests
+
+- Tenant FSM
+- Task FSM
+- Validation rules
+- Version checks
+- Outbox service
+
+## Integration Tests
+
+- Create → Deploy → Active lifecycle
+- Update lifecycle
+- Destroy lifecycle
+- Failure transitions
+- Duplicate message handling
+- Out-of-order message handling
+
+## Concurrency Tests
+
+- Parallel PATCH race
+- Parallel CREATE race
+- Duplicate event replay
+
+---
+
+# 19. Quality Gates
+
+```
+make fmt
+
+make lint
+
+make test
+
+make integration-test
+
+make ci
+```
+
+Includes:
+
+- gofmt
+- staticcheck
+- go test -race
+- integration suite
+- optional Trivy scan
+
+---
+
+# 20. Acceptance Criteria
+
+The solution is complete when:
+
+1. `docker compose up` boots entire system.
+2. Tenant creation automatically triggers provisioning.
+3. Worker emits progress updates.
+4. Tenant transitions to active after deploy completion.
+5. Tasks are queryable via APIs.
+6. State machine rules are enforced.
+7. Duplicate messages are safely ignored.
+8. Out-of-order messages do not regress state.
+9. Concurrent PATCH requests cannot both succeed.
+10. Concurrent tenant creation with same slug produces exactly one success.
+11. Data survives service restart.
+12. All tests pass via a single command.
+13. README documents architecture, trade-offs, setup, API examples, and failure scenarios.
+
+This revised scope now aligns very closely with the candidate brief and should be sufficient as a development blueprint for implementation.
