@@ -94,3 +94,12 @@ func (r *TaskRepository) UpdateStatus(ctx context.Context, id string, newStatus 
 	}
 	return nil
 }
+
+func (r *TaskRepository) CountOpenTasks(ctx context.Context, tenantID string) (int, error) {
+	var count int
+	err := r.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM tasks WHERE tenant_id = ? AND status IN ('accepted', 'in_progress')`, tenantID).Scan(&count)
+	if err != nil {
+		return 0, fmt.Errorf("count open tasks: %w", err)
+	}
+	return count, nil
+}
