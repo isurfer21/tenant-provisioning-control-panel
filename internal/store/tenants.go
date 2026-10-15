@@ -28,13 +28,15 @@ func (r *TenantRepository) Create(ctx context.Context, t *model.Tenant) error {
 		INSERT INTO tenants (id, slug, name, status, version, created_at, updated_at)
 		VALUES (?, ?, ?, 'provisioning', 1, ?, ?)
 	`, t.ID, t.Slug, t.Name, now, now)
-
 	if err != nil {
 		if strings.Contains(err.Error(), "UNIQUE constraint") {
 			return ErrAlreadyExists
 		}
 		return fmt.Errorf("create tenant: %w", err)
 	}
+
+	t.Version = 1
+	t.Status = "provisioning"
 	return nil
 }
 
