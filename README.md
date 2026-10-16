@@ -41,20 +41,76 @@ sequenceDiagram
 
 ## Quick Start
 
-Requirements: [Go 1.22+](https://go.dev/dl/), [Docker + Docker Compose](https://docs.docker.com/compose/).
+Requirements: [Go 1.25+](https://go.dev/dl/), [Docker + Docker Compose](https://docs.docker.com/compose/) (bookworm image).
+
+### 1. Build & Run with Docker Compose
 
 ```bash
-# 1. Build & bring up NATS, API, and Worker simulator
-make boot
-# Equivalent: docker compose up --build
+# Build images and start all services (NATS, API, Worker simulator)
+docker compose up --build -d
 
-# 2. Run tests (race detector enabled)
-make test
-# Equivalent: go test -race ./...
+# Watch logs
+docker compose logs -f
 
-# 3. Format code
-make fmt
+# Stop everything (keeps containers, drops data volumes)
+docker compose down
+
+# Nuclear reset — nuke volumes too
+docker compose down -v
 ```
+
+### 2. Run End-to-End HTTP Tests
+
+After `docker compose up`, run the bash-based e2e suite:
+
+```bash
+bash e2e/test_api.sh
+```
+
+Output example:
+```
+=== 1. GET /healthz ===
+  ✓ returns ok
+
+=== 2. POST /v1/tenants (slug+name → 201) ===
+  ✓ id=… slug=t-one name=Tenant One
+...
+ALL CHECKS PASSED
+```
+
+### 3. Build & Run Manually (no Compose)
+
+```bash
+# ---- Step A: Start NATS JetStream ----
+docker run -d --name tpcp-nats \
+  -p 4222:4222 -p 8222:8222 \
+  -v nats-data:/var/lib/nats \
+  nats:2.10-alpine -c /etc/nats-config/nats.conf
+
+# Mount nats-conf.conf into the container:
+docker run -d --name tpcp-nats \
+  -p 4222:4222 -p 8222:8222 \
+  -v nats-data:/var/lib/nats \
+  -v $(pwd)/nats-conf.conf:/etc/nats-config/nats.conf \
+  nats:2.10-alpine
+
+# ---- Step B: Build the API image locally ----
+docker build -t tpcp-api .
+
+# ---- Step C: Run the API server ----
+docker run -d --name tpcp-server \
+  -p 8080:8080 \
+  -e PORT=8080 \
+  -e DB_PATH=/app/data/tenant.db \
+  -e NATS_URL=nats://host.docker.internal:4222 \
+  -e LOG_LEVEL=INFO \
+  -v sqlite-data:/app/data \
+  tpcp-api
+
+# The server logs "API ready at http://localhost:8080" when up.
+```
+
+> **Note:** `DB_PATH` defaults to `/app/data/tenant.db` inside the container and the Dockerfile pre-creates that directory. The DB file survives across restarts because of the named volume.
 
 ### Service Ports
 
@@ -145,7 +201,76 @@ In Docker Compose, the worker uses `FAIL_RATE`, `MIN_DELAY_MS`, and `MAX_DELAY_M
 
 ---
 
+## Working with Docker
+
+### Inspect & Debug Containers
+
+```bash
+# See running containers
+docker ps --filter "name=tpcp-"
+
+# Tail API logs (last 100 lines)
+docker logs tpcp-server-1 --tail 100
+
+# Exec into the running API container
+docker exec -it tpcp-server-1 sh
+
+# Query the SQLite DB from within the container
+docker exec tpcp-server-1 sqlite3 /app/data/tenant.db "SELECT id, slug, status FROM tenants ORDER BY rowid DESC LIMIT 5;"
+
+# Check NATS stream info (requires nats CLI installed)
+docker exec tpcp-nats-1 nats --server=nats://localhost:4222 stream info TASKS_CREATE
+
+# Clean up orphaned state between tests
+docker compose down -v && docker compose up -d
+```
+
+### Worker Simulator in Docker
+
+You can run the worker-sim standalone (useful when you want NATS + API but no simulator):
+
+```bash
+# Use pre-built image
+docker run --rm \
+  -e PORT=8081 \
+  -e DB_PATH=/app/data/tenant.db \
+  -e NATS_URL=nats://host.docker.internal:4222 \
+  -e FAIL_RATE=0.2 \
+  -e MIN_DELAY_MS=500 \
+  -v sqlite-data:/app/data \
+  tpcp-worker-sim
+
+# Or build-and-run in one shot
+docker build -t tpcp-worker-sim -f Dockerfile.worker . && docker run --rm \
+  -e FAIL_RATE=0.1 -e MIN_DELAY_MS=200 -e MAX_DELAY_MS=1000 \
+  -v sqlite-data:/app/data \
+  tpcp-worker-sim
+```
+
+### Run Everything from Scratch (reproducible)
+
+```bash
+# Full teardown → build → start → verify health
+docker compose down -v && docker compose up --build -d && sleep 5 \
+  && curl -sf http://localhost:8080/healthz && echo " ✓ API is ready"
+```
+
+---
+
 ## Testing
+
+### E2E HTTP Tests (Docker-first)
+
+Run against the live Docker services:
+
+```bash
+bash e2e/test_api.sh        # full lifecycle
+bash e2e/test_fix.sh         # targeted fix verification
+```
+
+These scripts are designed to work with `docker compose up` — no Go toolchain needed on the host.
+
+### Unit Tests (requires Go 1.25+ locally)
 
 All tests live alongside their source code:
 
@@ -158,6 +283,17 @@ go test ./internal/store -run TestOptimisticLockingConcurrency
 
 # Full end-to-end lifecycle
 go test ./internal/lifecycle -run TestE2ELifecycle
+
+# All tests, race detector, parallel
+go test -race -count=1 ./...
 ```
 
-CI-equivalent via Makefile: `make test`.
+### Run Tests Inside Docker (no local Go)
+
+```bash
+docker run --rm \
+  -v $(pwd):/app \
+  -w /app \
+  golang:1.25-bookworm \
+  go test -race -count=1 ./...
+```
