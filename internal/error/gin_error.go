@@ -51,53 +51,23 @@ func MapError(err error, reqID string) *Error {
 			message = fmt.Sprintf("invalid request body: %s", valErr.Message)
 		} else {
 			var transErr *lifecycle.ErrInvalidTransition
-		if errors.As(err, &transErr) {
-			code = http.StatusUnprocessableEntity
-			message = fmt.Sprintf("invalid state transition: %s -> %s", transErr.From, transErr.To)
-		} else {
-			var termErr *lifecycle.ErrTerminalTask
-			if errors.As(err, &termErr) {
-				code = http.StatusForbidden
-				message = fmt.Sprintf("task already in terminal state: %s", termErr.Status)
+			if errors.As(err, &transErr) {
+				code = http.StatusUnprocessableEntity
+				message = fmt.Sprintf("invalid state transition: %s -> %s", transErr.From, transErr.To)
 			} else {
-				var openTaskErr *lifecycle.ErrOpenTaskGuard
-				if errors.As(err, &openTaskErr) {
-					code = http.StatusConflict
-					message = fmt.Sprintf("tenant %s has an active task — complete it before creating another", openTaskErr.TenantID)
-				} else if err == stores.ErrNotFound {
-					code = http.StatusNotFound
-					message = "resource not found"
+				var termErr *lifecycle.ErrTerminalTask
+				if errors.As(err, &termErr) {
+					code = http.StatusForbidden
+					message = fmt.Sprintf("task already in terminal state: %s", termErr.Status)
 				} else {
-					code = http.StatusInternalServerError
-					message = "internal server error"
-				}
-			}
-		}
-	}
-
-	return &Error{Code: code, Message: message, ReqID: reqID}	default:
-		var valErr *stores.ErrValidation
-		if errors.As(err, &valErr) {
-			code = http.StatusBadRequest
-			message = fmt.Sprintf("invalid request body: %s", valErr.Message)
-		} else {
-			var transErr *lifecycle.ErrInvalidTransition
-		if errors.As(err, &transErr) {
-			code = http.StatusUnprocessableEntity
-			message = fmt.Sprintf("invalid state transition: %s -> %s", transErr.From, transErr.To)
-		} else {
-			var termErr *lifecycle.ErrTerminalTask
-			if errors.As(err, &termErr) {
-				code = http.StatusForbidden
-				message = fmt.Sprintf("task already in terminal state: %s", termErr.Status)
-			} else {
-				var openTaskErr *lifecycle.ErrOpenTaskGuard
-				if errors.As(err, &openTaskErr) {
-					code = http.StatusConflict
-					message = fmt.Sprintf("tenant %s has an active task — complete it before creating another", openTaskErr.TenantID)
-				} else {
-					code = http.StatusInternalServerError
-					message = "internal server error"
+					var openTaskErr *lifecycle.ErrOpenTaskGuard
+					if errors.As(err, &openTaskErr) {
+						code = http.StatusConflict
+						message = fmt.Sprintf("tenant %s has an active task — complete it before creating another", openTaskErr.TenantID)
+					} else {
+						code = http.StatusInternalServerError
+						message = "internal server error"
+					}
 				}
 			}
 		}
