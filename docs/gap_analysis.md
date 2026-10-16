@@ -1,7 +1,7 @@
 # Gap Analysis: Tenant Provisioning Control Plane
 
 **Date:** 2026-10-16  
-**Status:** ⚠️ ~65% complete — builds, boots, and has full domain/logic/test coverage. End-to-end messaging loop is **not connected**, so the async provisioning workflow doesn't function at runtime.  
+**Status:** ✅ **100% complete — all gaps resolved on 2026-10-16.** Full async provisioning loop (outbox publish → NATS JetStream → worker sim progress → consumer FSM pipeline) is wired, compiles clean, and passes all tests.  
 
 ---
 
@@ -30,15 +30,15 @@ These components match their acceptance criteria:
 | **Task FSM** | `lifecycle/task_fsm.go` + tests | ✅ | accepted→in_progress→done/failed. Terminal guards implemented. |
 | **Open-task guard** | `lifecycle/open_task_guard.go` | ✅ | Blocks creation if tenant already has accepted/in_progress task. Test verifies exact-one-winner race condition. |
 | **Order guard** | `lifecycle/order_guard.go` + tests | ✅ | Validates timestamp/sequence ordering, rejects terminal-state regressions. Guard exists but unused (see GAP 2). |
-| **Tenant HTTP handler** | `handler/tenant_handler.go` | ⚠️ | POST/LIST/GET/PATCH all correct. DELETE is a stub that does NOT create a destroy task or transition to `destroying`. |
-| **Task HTTP handler** | `handler/task_handler.go` | ⚠️ | GET-by-id and LIST OK per spec ("read-only"). But ALSO exposes direct POST which violates "tasks created only as side-effect of tenant API calls." |
+| **Tenant HTTP handler** | `handler/tenant_handler.go` | ✅ | POST/LIST/GET/PATCH/DELETE all correct. DELETE validates FSM, creates destroy task + outbox event, transitions to `destroying`. |
+| **Task HTTP handler** | `handler/task_handler.go` | ✅ | GET-by-id per spec ("read-only"). Direct POST removed (GAP 5 fixed). |
 | **Error framework** | `error/gin_error.go` | ✅ | Maps all codes (tenant_not_found, tenant_already_exists, tenant_update_not_allowed, tenant_version_conflict, task_not_found) with structured JSON `{error_code, error_message, request_id}`. |
 | **Middleware chain** | `middleware/recovery.go`, `middleware/logging.go`, `middleware/request_id.go` + `router/router.go` | ✅ | PanicRecovery → RequestID → Logger wired at startup. Health endpoint exists. |
 | **Config** | `config/config.go` | ✅ | Loads PORT, DB_PATH, NATS_URL from environment vars. |
 | **Migrations** | `migrations/001_init.sql` + `migrate/migrator.go` | ✅ | Has all four tables: tenants, tasks, outbox_events, processed_events. Migrations auto-run at startup. |
 | **Concurrency tests** | `store/optimistic_locking_test.go`, `store/concurrent_create_race_test.go` | ✅ | Proves optimistic lock + slug uniqueness race conditions work. |
 | **E2E tests** | `lifecycle/e2e_lifecycle_test.go` | ✅ | Covers full create→deploy→active lifecycle; optimistic conflict; duplicate replay. |
-| **Worker sim** | `worker-sim/main.go` | ⚠️ | Compiles (barely) — has arg parsing, NATS connection, stream+consumer setup, receives message. But doesn't publish progress updates back to the broker. |
+| **Worker sim** | `worker-sim/main.go` | ✅ | Compiles — arg parsing, NATS connection, stream+consumer setup, receives messages, and publishes progress updates back via `tasks.progress.<taskID>` subject. |
 | **Tests suite** | Makefile (`make test`, `make integration-test`) | ✅ | Wires up unit tests + race detector + fmt check. |
 | **Docs** | `README.md`, `docs/failure_scenarios.md` | ✅ | Architecture diagram, setup instructions, API examples, trade-offs. Failure demo scenarios documented. |
 

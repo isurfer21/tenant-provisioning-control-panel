@@ -42,7 +42,7 @@ func TestE2E_Lifecycle_FullFlow(t *testing.T) {
 	r := gin.New()
 	api := r.Group("/v1")
 	repo := store.NewTenantRepository(db)
-	svcSvc := svc.NewTenantService(repo)
+	svcSvc := svc.NewTenantService(db, repo)
 	handler := th.NewTenantHandler(svcSvc)
 	handler.Register(api)
 
@@ -122,7 +122,7 @@ func TestE2E_OptimisticConflict(t *testing.T) {
 	initSchema(db, t)
 
 	repo := store.NewTenantRepository(db)
-	svcSvc := svc.NewTenantService(repo)
+	svcSvc := svc.NewTenantService(db, repo)
 	handler := th.NewTenantHandler(svcSvc)
 
 	gin.SetMode(gin.TestMode)
@@ -232,7 +232,7 @@ func TestE2E_CreateTaskWorkflow(t *testing.T) {
 	initSchema(db, t)
 
 	repo := store.NewTenantRepository(db)
-	svcSvc := svc.NewTenantService(repo)
+	svcSvc := svc.NewTenantService(db, repo)
 
 	// 1. Create tenant via service layer.
 	tenant, err := svcSvc.CreateTenant(ctx, &m.Tenant{Slug: "e2e-tkw-001", Name: "TaskFlowTest"})
@@ -284,7 +284,7 @@ func TestE2E_DuplicateEventIdempotency(t *testing.T) {
 	}
 	defer db.Close()
 
-	err = ob.ApplySchema(db)
+	_, err = db.Exec(ob.Schema)
 	if err != nil {
 		t.Fatalf("apply outbox schema: %v", err)
 	}

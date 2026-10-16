@@ -15,6 +15,11 @@ import (
 	js "github.com/nats-io/nats.go/jetstream"
 )
 
+var (
+	nc      *nats.Conn
+	jsWpub  js.JetStream // JetStream context for writing progress.
+)
+
 func main() {
 	if len(os.Args) < 3 {
 		fmt.Fprintf(os.Stderr, "Usage: worker-sim --fail-rate=<0-1> --max-delay=<duration>\n")
@@ -29,20 +34,28 @@ func main() {
 			fmt.Sscanf(arg, "--fail-rate=%f", &failRate)
 		case strings.HasPrefix(arg, "--max-delay="):
 			d, err := time.ParseDuration(strings.TrimPrefix(arg, "--max-delay="))
-			if err == nil { maxDelay = d }
+			if err == nil {
+				maxDelay = d
+			}
 		}
 	}
 
-	nc, err := nats.Connect(nats.DefaultURL)
-	if err != nil { fmt.Fprintf(os.Stderr, "nats connect: %v\n", err); os.Exit(1) }
+	var err error
+	nc, err = nats.Connect(nats.DefaultURL)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "nats connect: %v\n", err)
+		os.Exit(1)
+	}
 	defer nc.Drain()
 
-	jsCtx, err := js.New(nc)
-	if err != nil { fmt.Fprintf(os.Stderr, "jetstream new: %v\n", err); os.Exit(1) }
+	jsWpub, err = js.New(nc)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "jetstream new: %v\n", err)
+		os.Exit(1)
+	}
 
-	// Create stream (Idempotent — safe to call repeatedly).
 	streamName := "TASKS_CREATE"
-	_, _ = jsCtx.CreateStream(context.Background(), js.StreamConfig{
+	_, _ = jsWpub.CreateStream(context.Background(), js.StreamConfig{
 		Name:     streamName,
 		Subjects: []string{"tasks.create.>", "tasks.progress.>"},
 	})
@@ -54,17 +67,22 @@ func main() {
 		AckPolicy:     js.AckExplicitPolicy,
 		AckWait:       30 * time.Second,
 	}
-	consumer, err := jsCtx.CreateConsumer(context.Background(), streamName, consumerCfg)
-	if err != nil { fmt.Fprintf(os.Stderr, "consumer: %v\n", err); os.Exit(1) }
+	consumer, err := jsWpub.CreateConsumer(context.Background(), streamName, consumerCfg)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "consumer: %v\n", err)
+		os.Exit(1)
+	}
 
-	handler := func(msg js.Msg) { handleInBound(context.Background(), cfg{failRate, maxDelay}, msg) }
+	cfg := cfg{failRate: failRate, maxDelay: maxDelay}
+	handler := func(msg js.Msg) { handleInBound(context.Background(), cfg, msg) }
 	conCtx, err := consumer.Consume(handler)
-	if err != nil  { fmt.Fprintf(os.Stderr, "consume: %v\n", err); os.Exit(1) }
-	defer conCtx.Stop()
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "consume: %v\n", err)
+		os.Exit(1)
+	}
 
 	fmt.Fprintln(os.Stderr, "[worker-sim] subscribed to tasks.create.>")
 
-	// Graceful shutdown on SIGINT/SIGTERM.
 	sigCh := make(chan os.Signal, 1)
 	signal.Notify(sigCh, syscall.SIGINT, syscall.SIGTERM)
 	<-sigCh
@@ -72,13 +90,17 @@ func main() {
 	conCtx.Stop()
 }
 
-type cfg struct{ failRate float64; maxDelay time.Duration }
+type cfg struct {
+	failRate float64
+	maxDelay time.Duration
+}
 
 func handleInBound(ctx context.Context, c cfg, msg js.Msg) {
 	var p struct {
 		TenantID string `json:"tenant_id"`
 		TaskID   string `json:"task_id"`
 		Type     string `json:"type"`
+		EventID  string `json:"event_id"`
 	}
 	if err := json.Unmarshal(msg.Data(), &p); err != nil {
 		fmt.Fprintf(os.Stderr, "[worker-sim] parse fail: %v\n", err)
@@ -86,17 +108,45 @@ func handleInBound(ctx context.Context, c cfg, msg js.Msg) {
 		return
 	}
 
-	time.Sleep(time.Duration(rand.Float64()*float64(c.maxDelay)))
+	time.Sleep(time.Duration(rand.Float64() * float64(c.maxDelay)))
 
 	if rand.Float64() < c.failRate {
 		msg.Nak()
 		fmt.Fprintf(os.Stderr, "[worker-sim] FAIL task=%s\n", p.TaskID)
+		publishProgress(ctx, "failed", p.TenantID, p.TaskID, p.EventID)
 		return
 	}
 
-	status := "in_progress"
-	if rand.IntN(2) == 0 { status = "done" /* randomly return done progress event for testing */ }
+	status := "done" // default: simulate successful provisioning complete
+	if rand.IntN(4) != 0 {
+		status = "in_progress" // sometimes stall in intermediate state
+	}
 
-	_ = status // emitted as 'tasks.progress.<task_id>' in production
+	fmt.Fprintf(os.Stderr, "[worker-sim] %s task=%s\n", status, p.TaskID)
+
+	// GAP 3 FIX: publish progress updates back to NATS.
+	publishProgress(ctx, status, p.TenantID, p.TaskID, p.EventID)
+
 	msg.Ack()
+}
+
+func publishProgress(ctx context.Context, status, tenantID, taskID, eventID string) {
+	// Use nc.Publish (no stream sequence like js.Publish).
+	progress := struct {
+		TenantID string `json:"tenant_id"`
+		TaskID   string `json:"task_id"`
+		Status   string `json:"status"`
+		EventID  string `json:"event_id"`
+	}{
+		TenantID: tenantID,
+		TaskID:   taskID,
+		Status:   status,
+		EventID:  eventID,
+	}
+	payload, _ := json.Marshal(progress)
+	if err := nc.Publish("tasks.progress."+taskID, payload); err != nil {
+		fmt.Fprintf(os.Stderr, "[worker-sim] publish err: %v\n", err)
+		return
+	}
+	fmt.Fprintf(os.Stderr, "[worker-sim] → published tasks.progress.%s [%s]\n", taskID, status)
 }

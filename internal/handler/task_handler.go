@@ -20,11 +20,19 @@ func NewTaskHandler(service *svc.TaskService) *TaskHandler {
 	return &TaskHandler{service: service}
 }
 
-// Register registers task routes at /v1/tasks prefix.
+// Register registers read-only task routes at /v1/tasks prefix. GAP 5: task creation is only via tenant API.
 func (h *TaskHandler) Register(r *gin.RouterGroup) {
 	t := r.Group("/tasks")
 	{
-		t.POST("", h.Create)      // POST  /v1/tasks — create new task
+		t.GET("/:id", h.GetByID) // GET   /v1/tasks/:id — read-only
+	}
+}
+
+// RegisterWithCreate is equivalent to full-register for backwards compat with callers who need the create route.
+func (h *TaskHandler) RegisterAll(r *gin.RouterGroup) {
+	t := r.Group("/tasks")
+	{
+		t.POST("", h.Create)      // POST  /v1/tasks — create new task (internal only)
 		t.GET("/:id", h.GetByID) // GET   /v1/tasks/:id
 	}
 }
