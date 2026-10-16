@@ -18,9 +18,9 @@ type OrderGuard struct {
 
 // taskState tracks the last seen event per task.
 type taskState struct {
-	status   string // "accepted" | "in_progress" | "done" | "failed"
-	ts       time.Time
-	seq      int64 // monotonically increasing sequence number
+	status string // "accepted" | "in_progress" | "done" | "failed"
+	ts     time.Time
+	seq    int64 // monotonically increasing sequence number
 }
 
 // NewOrderGuard creates a guard with max stale tolerance of 30 seconds.
@@ -44,14 +44,13 @@ func (g *OrderGuard) Validate(taskID, status string, ts time.Time, seq int64) er
 
 	prev, exists := g.tasks[taskID]
 	if !exists {
-		// First event for this task — accept it as baseline.
 		g.tasks[taskID] = taskState{status: status, ts: ts, seq: seq}
 		return nil
 	}
 
 	stale := ts.Sub(prev.ts)
 	if stale < -g.maxStale {
-		return fmt.Errorf("order guard: event for %s is %.0fs behind latest (seq %d → %d)",
+		return fmt.Errorf("order guard: event for %s is %.0fs behind latest (seq %d -> %d)",
 			taskID, -stale.Seconds(), prev.seq, seq)
 	}
 
@@ -61,13 +60,12 @@ func (g *OrderGuard) Validate(taskID, status string, ts time.Time, seq int64) er
 			taskID, seq, prev.seq)
 	}
 
-	// Validate state transitions are sensible.
+	// Check state transition validity.
 	if !validTransition(prev.status, status) {
-		return fmt.Errorf("order guard: invalid transition %s → %s for task %s",
+		return fmt.Errorf("order guard: invalid transition %s -> %s for task %s",
 			prev.status, status, taskID)
 	}
 
-	// Accept and update state.
 	g.tasks[taskID] = taskState{status: status, ts: ts, seq: seq}
 	return nil
 }
@@ -80,8 +78,8 @@ func validTransition(from, to string) bool {
 	case "in_progress":
 		return to == "done" || to == "in_progress" // continue or re-enter (idempotent)
 	case "done", "failed":
-		return false // terminal states — no further transitions allowed
+		return false  // terminal states — no further transitions allowed
 	default:
-		return true // unknown state from prev event — accept for forward compatibility
+		return true  // unknown state from prev event — accept for forward compatibility
 	}
 }

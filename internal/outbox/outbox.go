@@ -37,16 +37,14 @@ func ApplySchema(db *sql.DB) error {
 
 // OutboxEvent is a row in the outbox_events table.
 type OutboxEvent struct {
-	ID      string    `json:"id"`
-	Subject string    `json:"subject"`
-	Payload []byte    `json:"payload"`
-	Attempts int64    `json:"attempts"`
+	ID        string    `json:"id"`
+	Subject   string    `json:"subject"`
+	Payload   []byte    `json:"payload"`
+	Attempts  int64     `json:"attempts"`
 	CreatedAt time.Time `json:"created_at"`
 }
 
-// CreateTenantTaskWithOutbox wraps tenant creation, task insertion, and outbox event
-// into a single DB transaction. The outbox event is later published by the
-// JetStream publisher (T19), keeping publish separate from the commit.
+//// T18: CreateTenantTaskWithOutbox creates tenant + task + outbox event in one DB tx.
 func CreateTenantTaskWithOutbox(
 	ctx context.Context, db *sql.DB, tenant *models.Tenant, taskType string,
 ) (*models.Tenant, *OutboxEvent, error) {
@@ -121,15 +119,7 @@ func CreateTenantTaskWithOutbox(
 	return tenant, outEv, nil
 }
 
-// MarkProcessed records that an inbound event has finished handling.
-func MarkProcessed(db *sql.DB, eventID string, subject string) error {
-	_, err := db.Exec(
-		"INSERT OR IGNORE INTO processed_events (event_id, subject, created_at) VALUES (?, ?, ?)",
-		eventID, subject, models.NowUTC())
-	return err
-}
-
-// IsProcessed checks whether an event was previously handled (idempotency guard).
+//// T22: Idempotent Message Processing - IsProcessed / Mark
 func IsProcessed(db *sql.DB, eventID string) (bool, error) {
 	var count int
 	err := db.QueryRow("SELECT COUNT(*) FROM processed_events WHERE event_id = ?", eventID).Scan(&count)
@@ -137,6 +127,13 @@ func IsProcessed(db *sql.DB, eventID string) (bool, error) {
 		return false, fmt.Errorf("check processed: %w", err)
 	}
 	return count > 0, nil
+}
+
+func MarkProcessed(db *sql.DB, eventID string, subject string) error {
+	_, err := db.Exec(
+		"INSERT OR IGNORE INTO processed_events (event_id, subject, created_at) VALUES (?, ?, ?)",
+		eventID, subject, models.NowUTC())
+	return err
 }
 
 // FetchPendingOutbox retrieves up to `limit` outbox events with <10 attempts.
@@ -175,6 +172,6 @@ func IncrementAttempts(db *sql.DB, id string) (bool, error) {
 	if err != nil {
 		return false, fmt.Errorf("increment attempts: %w", err)
 	}
-	rows, _ := res.RowsAffected()
-	return rows > 0, nil
+	rowsAffected, _ := res.RowsAffected()
+	return rowsAffected > 0, nil
 }

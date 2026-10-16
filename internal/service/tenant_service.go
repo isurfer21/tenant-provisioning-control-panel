@@ -2,7 +2,6 @@ package service
 
 import (
 	"context"
-	"fmt"
 
 	lifecycle "tenant-provisioning-control-plane/internal/lifecycle"
 	models "tenant-provisioning-control-plane/internal/model"

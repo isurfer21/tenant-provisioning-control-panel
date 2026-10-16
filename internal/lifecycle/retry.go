@@ -1,7 +1,7 @@
 package lifecycle
 
 import (
-	"fmt"
+	"errors"
 	"time"
 )
 
@@ -16,16 +16,16 @@ func (e *DLQError) Error() string { return "poison: " + e.Message }
 // T24: Retry Mechanism & Poison Handling — applies exponential backoff to
 // retriable failures and eventually routes messages to DLQ after max attempts.
 type RetryPolicy struct {
-	MaxRetries int           // max publish/consume attempts (default 10)
-	BaseDelay  time.Duration // initial delay (default 500ms, see T24: base back-off delay from outbox)
+	MaxRetries int           // max publish/consume attempts (default 10, matches outbox.attempts < 10 constraint)
+	BaseDelay  time.Duration // initial delay (default 500ms)
 	MaxDelay   time.Duration // cap on back-off (default 60s)
 	DLQSubject string        // e.g. "tasks.dlq" — the DLQ JetStream subject for poison messages
 }
 
-// DefaultRetryPolicy returns sensible defaults matching outbox.outbox.attempts < 10 guard.
+// DefaultRetryPolicy returns sensible defaults matching outbox.attempts < 10 guard.
 func DefaultRetryPolicy() RetryPolicy {
 	return RetryPolicy{
-		MaxRetries: 10, // matches outbox_events.attempts < 10 constraint
+		MaxRetries: 10,
 		BaseDelay:  500 * time.Millisecond,
 		MaxDelay:   60 * time.Second,
 		DLQSubject: "tasks.dlq",
@@ -37,13 +37,13 @@ func (p RetryPolicy) NextDelay(attempt int) time.Duration {
 	if p.BaseDelay <= 0 {
 		p.BaseDelay = 500 * time.Millisecond
 	}
-	if p.MaxDelay == 0 {
+	if p.MaxDelay == 0 || p.MaxDelay < p.BaseDelay {
 		p.MaxDelay = 60 * time.Second
 	}
 
 	delay := float64(p.BaseDelay)
-	for i := 0; i < attempt && i < 30; i++ { // cap at 2^30 to overflow.
-		delay *= 1.5 // gentle exponential (not pure 1, more stable under burst)
+	for i := 0; i < attempt && i < 30; i++ { // cap at 2^30 to avoid overflow
+		delay *= 1.5 // gentle exponential (more stable under burst than pure 2x)
 	}
 
 	d := time.Duration(delay)
@@ -58,15 +58,9 @@ func (p RetryPolicy) ShouldRetry(err error) bool {
 	if err == nil {
 		return false
 	}
-	// Permanent failures route to DLQ immediately.
 	var dlqErr *DLQError
-	if ok := okAs(dlqErr, err); ok {
-		return false
+	if errors.As(err, &dlqErr) {
+		return false // permanent failure — route to DLQ
 	}
 	return true // all other errors are retried
-}
-
-func okAs(target interface{}, err error) bool         {return}  // placeholder for type assertions
-func (p RetryPolicy) RouteToDLQ(taskID string, reason error) *DLQError {
-	return & DLQError{Message: fmt.Sprintf("[%s]: %v", taskID, reason)}
 }
