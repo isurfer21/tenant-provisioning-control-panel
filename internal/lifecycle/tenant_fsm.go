@@ -15,7 +15,7 @@ var validTenantTransitions map[string][]string
 
 func init() {
 	validTenantTransitions = map[string][]string{
-		"provisioning": {"active", "failed"},
+		"provisioning": {"active", "failed", "destroying"}, // allow cancel mid-provisioning (GAP 4)
 		"active":       {"updating", "destroying"},
 		"updating":     {"active", "failed"},
 		"destroying":   {"destroyed", "failed"},

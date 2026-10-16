@@ -21,13 +21,19 @@ var (
 )
 
 func main() {
-	if len(os.Args) < 3 {
-		fmt.Fprintf(os.Stderr, "Usage: worker-sim --fail-rate=<0-1> --max-delay=<duration>\n")
-		os.Exit(1)
-	}
-
 	var failRate float64
 	maxDelay := 5 * time.Second
+
+	// Read defaults from env vars (set by docker-compose.yml) if present.
+	hasEnv := false
+	if v := os.Getenv("FAIL_RATE"); v != "" {
+		fmt.Sscanf(v, "%f", &failRate); hasEnv = true
+	}
+	if v := os.Getenv("MAX_DELAY_MS"); v != "" {
+		d, err := time.ParseDuration(v + "ms")
+		if err == nil { maxDelay = d }; hasEnv = true
+	}
+
 	for _, arg := range os.Args[1:] {
 		switch {
 		case strings.HasPrefix(arg, "--fail-rate="):
@@ -40,8 +46,16 @@ func main() {
 		}
 	}
 
+	// Require either env vars or CLI args; show usage if neither.
+	if !hasEnv && len(os.Args) < 3 {
+		fmt.Fprintf(os.Stderr, "Usage: worker-sim --fail-rate=<0-1> --max-delay=<duration>\n")
+		os.Exit(1)
+	}
+
 	var err error
-	nc, err = nats.Connect(nats.DefaultURL)
+	natsURL := ""
+	if v := os.Getenv("NATS_URL"); v != "" { natsURL = v }
+	nc, err = nats.Connect(natsURL)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "nats connect: %v\n", err)
 		os.Exit(1)

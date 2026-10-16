@@ -64,7 +64,7 @@ func (s *TenantService) UpdateTenant(
 	if err != nil {
 		return nil, err
 	}
-	if tenant.Version != oldVersion {
+	if oldVersion != 0 && tenant.Version != oldVersion { // oldVersion=0 skips optimistic lock (client has no prior version)
 		return nil, stores.ErrConflict
 	}
 
@@ -100,7 +100,7 @@ func (s *TenantService) StartDestroy(ctx context.Context, id string) (*models.Te
 		return nil, err
 	}
 
-	if tenant.Status != "active" && tenant.Status != "failed" {
+	if tenant.Status != "active" && tenant.Status != "failed" && tenant.Status != "provisioning" {
 		return nil, &lifecycle.ErrInvalidTransition{From: tenant.Status, To: "destroying"}
 	}
 	if err := lifecycle.ValidateTenantTransition(tenant.Status, "destroying"); err != nil {

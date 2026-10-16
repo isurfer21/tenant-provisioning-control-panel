@@ -85,7 +85,7 @@ func (h *TenantHandler) List(c *gin.Context) {
 type updateTenantRequest struct {
 	Name   string `json:"name"`
 	Status string `json:"status"`
-	Version int64 `json:"version" binding:"required"`
+	Version int64 `json:"version"` // optional — 0 means "skip optimistic lock check"
 }
 
 func (h *TenantHandler) Update(c *gin.Context) {

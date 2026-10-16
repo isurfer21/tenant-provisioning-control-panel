@@ -14,6 +14,7 @@ import (
 
 	nats "github.com/nats-io/nats.go"
 	js "github.com/nats-io/nats.go/jetstream"
+	_ "github.com/mattn/go-sqlite3"
 
 	cfg "tenant-provisioning-control-plane/internal/config"
 	migratepkg "tenant-provisioning-control-plane/internal/migrate"
@@ -63,11 +64,15 @@ func main() {
 	}
 
 	streamName := "TASKS_CREATE"
-	_, _ = jsCtx.CreateStream(context.Background(), js.StreamConfig{
+	_, err = jsCtx.CreateStream(context.Background(), js.StreamConfig{
 		Name:     streamName,
 		Subjects: []string{"tasks.create.>", "tasks.progress.>"},
 	})
-	log.Printf("[nats] stream %s ready", streamName)
+	if err != nil {
+		log.Printf("[nats] warn: stream may already exist: %v", err)
+	} else {
+		log.Printf("[nats] stream %s ready", streamName)
+	}
 
 	// ── GAP 1+6: outbound dispatcher (outbox → NATS publish). ──────
 	fetcher := &outbxFetchAdapter{db: db} // implements natspkg.Fetcher
