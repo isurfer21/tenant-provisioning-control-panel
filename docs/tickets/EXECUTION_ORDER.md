@@ -67,9 +67,9 @@ Tickets are fully groomed with standardized `DEPENDS_ON:`, `ESTIMATE:` lines at 
 
 ---
 
-## 🟩 PHASE 5: Documentation & Demo Prep (6 hrs total)
-| #   | Ticket                           | Depends On      | Est.  | Action                                                       |
-|:----|:---------------------------------|:----------------|:------|:-------------------------------------------------------------|
-| T32 | README Architecture & Setup Docs | **All Tickets** | 4 hrs | Mermaid diagram, quick start guide, API examples             |
-| T33 | Failure Scenario Documentation   | **Full System** | 2 hrs | Guide for `--fail-rate=1.0`, concurrent PATCH conflict demos |
+## 🟩 PHASE 5: Documentation & Demo Prep (6 hrs total) [✅ COMPLETE]
+| #   | Ticket                           | Depends On      | Est.  | Action                                                       | Status |
+|:----|:---------------------------------|:----------------|:------|:-------------------------------------------------------------|:-------|
+| T32 | README Architecture & Setup Docs | **All Tickets** | 4 hrs | Mermaid diagram, quick start guide, API examples             | ✅ Done - `README.md` |
+| T33 | Failure Scenario Documentation   | **Full System** | 2 hrs | Guide for `--fail-rate=1.0`, concurrent PATCH conflict demos | ✅ Done - `failure_scenarios.md` |
 

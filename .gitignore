@@ -2,3 +2,5 @@
 .DS_Store
 server
 data/
+.tmp/
+lifecycle.test
