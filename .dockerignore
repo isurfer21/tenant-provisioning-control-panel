@@ -1,0 +1,9 @@
+.git
+.gitignore
+.env
+.DS_Store
+.opencode
+.tmp/
+logs/
+e2e/
+bin/

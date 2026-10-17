@@ -75,9 +75,17 @@ func (r *TenantRepository) GetBySlug(ctx context.Context, slug string) (*model.T
 }
 
 func (r *TenantRepository) Update(ctx context.Context, id string, name string, status string, oldVersion int64) error {
-	res, err := r.db.ExecContext(ctx, `
-		UPDATE tenants SET name = ?, status = ?, version = version + 1, updated_at = ?
-		WHERE id = ? AND version = ?`, name, status, model.NowUTC(), id, oldVersion)
+	var query string
+	var args []interface{}
+	if oldVersion < 1 { // skip optimistic lock (oldVersion==0 = client has no prior state)
+		query = `UPDATE tenants SET name = ?, status = ?, version = version + 1, updated_at = ? WHERE id = ?`
+		args = []interface{}{name, status, model.NowUTC(), id}
+	} else {
+		query = `UPDATE tenants SET name = ?, status = ?, version = version + 1, updated_at = ? WHERE id = ? AND version = ?`
+		args = []interface{}{name, status, model.NowUTC(), id, oldVersion}
+	}
+
+	res, err := r.db.ExecContext(ctx, query, args...)
 	if err != nil {
 		return fmt.Errorf("update tenant: %w", err)
 	}

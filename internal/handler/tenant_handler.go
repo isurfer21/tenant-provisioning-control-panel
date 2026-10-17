@@ -8,27 +8,26 @@ import (
 	errpkg "tenant-provisioning-control-plane/internal/error"
 	models "tenant-provisioning-control-plane/internal/model"
 	pkgmiddleware "tenant-provisioning-control-plane/internal/middleware"
-	svc "tenant-provisioning-control-plane/internal/service"
+	svcpkg "tenant-provisioning-control-plane/internal/service"
 )
 
-// TenantHandler handles HTTP requests for tenant lifecycle endpoints (CRUD).
+// TenantHandler handles HTTP requests for tenant lifecycle endpoints.
 type TenantHandler struct {
-	service *svc.TenantService
+	service *svcpkg.TenantService
 }
 
-func NewTenantHandler(service *svc.TenantService) *TenantHandler {
-	return &TenantHandler{service: service}
+func NewTenantHandler(svc *svcpkg.TenantService) *TenantHandler {
+	return &TenantHandler{service: svc}
 }
 
-// Register registers all tenant routes at /v1/tenants prefix.
 func (h *TenantHandler) Register(r *gin.RouterGroup) {
 	t := r.Group("/tenants")
 	{
-		t.POST("", h.Create)      // POST  /v1/tenants — create new tenant (body: slug, name)
+		t.POST("", h.Create)      // POST  /v1/tenants — create new tenant (body: slug, name); invokes outbox. T18
 		t.GET("", h.List)         // GET   /v1/tenants?status=...&page=&limit=
 		t.GET("/:id", h.GetByID) // GET   /v1/tenants/:id
 		t.PATCH("/:id", h.Update)// PATCH /v1/tenants/:id (body: name?, status?, version)
-		t.DELETE("/:id", h.Delete)// DELETE /v1/tenants/:id
+		t.DELETE("/:id", h.Delete)// DELETE /v1/tenants/:id — full lifecycle destroy. T14 GAP 4.
 	}
 }
 
@@ -45,7 +44,7 @@ func (h *TenantHandler) Create(c *gin.Context) {
 		return
 	}
 	t := &models.Tenant{Slug: req.Slug, Name: req.Name}
-	result, err := h.service.CreateTenant(c.Request.Context(), t)
+	result, err := h.service.CreateTenantWithOutbox(c.Request.Context(), t)
 	if err != nil {
 		handleError(c, err)
 		return
@@ -86,7 +85,7 @@ func (h *TenantHandler) List(c *gin.Context) {
 type updateTenantRequest struct {
 	Name   string `json:"name"`
 	Status string `json:"status"`
-	Version int64 `json:"version" binding:"required"`
+	Version int64 `json:"version"` // optional — 0 means "skip optimistic lock check"
 }
 
 func (h *TenantHandler) Update(c *gin.Context) {
@@ -105,19 +104,29 @@ func (h *TenantHandler) Update(c *gin.Context) {
 	c.JSON(http.StatusOK, gin.H{"data": result})
 }
 
+// Delete implements full tenant-destroy lifecycle (GAP 4): validates status, creates destroy task + outbox event, transitions to 'destroying'.
 func (h *TenantHandler) Delete(c *gin.Context) {
 	id := c.Param("id")
-	result, err := h.service.GetTenantByID(c.Request.Context(), id)
+	tenant, err := h.service.GetTenantByID(c.Request.Context(), id)
 	if err != nil {
 		handleError(c, err)
 		return
 	}
-	_ = result // For now just confirm the tenant exists; real delete would use outbox in Phase 3.
-	c.JSON(http.StatusOK, gin.H{"data": map[string]string{"status": "deleted"}})
+
+	result, err := h.service.StartDestroy(c.Request.Context(), tenant.ID)
+	if err != nil {
+		errpkg.SendError(c, http.StatusUnprocessableEntity, "cannot destroy: "+err.Error(), pkgmiddleware.GetReqID(c))
+		return
+	}
+
+	c.JSON(http.StatusOK, gin.H{"data": result})
 }
 
 func handleError(c *gin.Context, err error) {
 	reqID := pkgmiddleware.GetReqID(c)
-	appErr := errpkg.MapError(err, reqID)
-	errpkg.SendError(c, appErr.Code, appErr.Message, reqID)
+	if appErr := errpkg.MapError(err, reqID); appErr != nil {
+		errpkg.SendError(c, appErr.Code, appErr.Message, reqID)
+		return
+	}
+	errpkg.SendError(c, http.StatusInternalServerError, "internal error", reqID)
 }

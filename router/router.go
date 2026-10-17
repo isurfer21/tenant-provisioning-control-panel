@@ -11,11 +11,11 @@ import (
 	errpkg    "tenant-provisioning-control-plane/internal/error"
 	handlerpkg "tenant-provisioning-control-plane/internal/handler"
 	svcpkg     "tenant-provisioning-control-plane/internal/service"
-	stores    "tenant-provisioning-control-plane/internal/store"
+	stores "tenant-provisioning-control-plane/internal/store"
 	lifecycle "tenant-provisioning-control-plane/internal/lifecycle"
 )
 
-// New creates a Gin router, wiring up middleware → services → handlers.
+// New creates a Gin router, wiring up middleware → services → handlers. GAP 5: tasks are read-only only.
 func New(db *sql.DB, logger io.Writer) *gin.Engine {
 	gin.SetMode(gin.ReleaseMode)
 	r := gin.New()
@@ -27,10 +27,10 @@ func New(db *sql.DB, logger io.Writer) *gin.Engine {
 		r.Use(middlewarepkg.Logger(logger))
 	}
 
-	// Wire service layer (repos are the leaf dependencies)
+	// Wire service layer. TenantService now needs *sql.DB for outbox writes + consumer reads.
 	tenantRepo := stores.NewTenantRepository(db)
-	taskRepo := stores.NewTaskRepository(db)
-	tenantSvc  := svcpkg.NewTenantService(tenantRepo)
+	taskRepo   := stores.NewTaskRepository(db)
+	tenantSvc  := svcpkg.NewTenantService(db, tenantRepo)
 	taskSvc    := svcpkg.NewTaskService(tenantRepo, taskRepo)
 
 	// Health endpoint
@@ -38,11 +38,11 @@ func New(db *sql.DB, logger io.Writer) *gin.Engine {
 		c.JSON(http.StatusOK, gin.H{"status": "ok"})
 	})
 
-	// Register API groups under /v1
+	// Register API groups under /v1. GAP 5: tasks group uses Register (GET-only), not RegisterAll.
 	v1 := r.Group("/v1")
 	{
-		handlerpkg.NewTenantHandler(tenantSvc).Register(v1) // tenant CRUD T14
-		handlerpkg.NewTaskHandler(taskSvc).Register(v1)     // task queries  T15
+		handlerpkg.NewTenantHandler(tenantSvc).Register(v1) // tenant CRUD T14 + GAP 4 (full DELETE).
+		handlerpkg.NewTaskHandler(taskSvc).Register(v1)     // read-only tasks per spec.
 	}
 
 	return r
