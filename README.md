@@ -157,11 +157,16 @@ curl -s -X PATCH http://localhost:8080/v1/tenants/<tenant-id> \
 curl -s -X DELETE http://localhost:8080/v1/tenants/<tenant-id>
 ```
 
-### Health Check
+### Health Check & Status
 
 ```bash
+# Liveness probe (no payload, no extra metadata)
 curl -s http://localhost:8080/healthz
 # → {"status":"ok"}
+
+# Operational status summary (uptime, config)
+curl -s http://localhost:8080/v1/status
+# → {"service":"tenant-provisioning-control-plane","status":"ok","uptime":42s,"nats_url":"nats://nats:4222"}
 ```
 
 ---
