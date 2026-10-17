@@ -55,7 +55,10 @@ func (g *OrderGuard) Validate(taskID, status string, ts time.Time, seq int64) er
 	}
 
 	// Reject if: same or later timestamp but sequence went backwards.
-	if ts.After(prev.ts) && seq <= prev.seq {
+	// Only reject when seq < prev.seq (not <=): equal sequences mean the same
+	// version — idempotent re-processing, not stale.  This prevents false
+	// positives when every lifecycle-generated task starts with seq=0.
+	if ts.After(prev.ts) && seq < prev.seq {
 		return fmt.Errorf("order guard: %s stale sequence (got %d, latest %d)",
 			taskID, seq, prev.seq)
 	}

@@ -90,6 +90,7 @@ func (s *TenantService) UpdateTenant(
 
 	tenant.Name = updateName
 	tenant.Status = updateStatus
+	tenant.Version++
 	return tenant, nil
 }
 

@@ -11,6 +11,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/google/uuid"
 	nats "github.com/nats-io/nats.go"
 	js "github.com/nats-io/nats.go/jetstream"
 )
@@ -124,10 +125,14 @@ func handleInBound(ctx context.Context, c cfg, msg js.Msg) {
 
 	time.Sleep(time.Duration(rand.Float64() * float64(c.maxDelay)))
 
+	// Each delivery gets a unique event_id so the consumer doesn't reject it as
+	// "already processed" on subsequent progress updates (dedup is per-event).
+	deliveryEvt := uuid.New().String()
+
 	if rand.Float64() < c.failRate {
 		msg.Nak()
 		fmt.Fprintf(os.Stderr, "[worker-sim] FAIL task=%s\n", p.TaskID)
-		publishProgress(ctx, "failed", p.TenantID, p.TaskID, p.EventID)
+		publishProgress(ctx, "failed", p.TenantID, p.TaskID, deliveryEvt)
 		return
 	}
 
@@ -139,7 +144,7 @@ func handleInBound(ctx context.Context, c cfg, msg js.Msg) {
 	fmt.Fprintf(os.Stderr, "[worker-sim] %s task=%s\n", status, p.TaskID)
 
 	// GAP 3 FIX: publish progress updates back to NATS.
-	publishProgress(ctx, status, p.TenantID, p.TaskID, p.EventID)
+	publishProgress(ctx, status, p.TenantID, p.TaskID, deliveryEvt)
 
 	msg.Ack()
 }
