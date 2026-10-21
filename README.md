@@ -110,7 +110,7 @@ docker run -d --name tpcp-server \
 # The server logs "API ready at http://localhost:8080" when up.
 ```
 
-> **Note:** `DB_PATH` defaults to `/app/data/tenant.db` inside the container and the Dockerfile pre-creates that directory. The DB file survives across restarts because of the named volume.
+> **Note:** `DB_PATH` defaults to `/app/data/tenant.db` inside the container and Dockerfile.api pre-creates that directory. The DB file survives across restarts because of the named volume.
 
 ### Service Ports
 

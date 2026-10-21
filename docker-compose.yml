@@ -3,18 +3,18 @@ services:
   nats:
     image: nats:2.10-alpine
     container_name: tpcp-nats-1
-    command: -c /etc/nats-config/nats.conf
+    command: ["-c", "/etc/nats-config/nats.conf"]
     ports:
       - "4222:4222"
       - "8222:8222"
     volumes:
       - nats-data:/var/lib/nats
-      - ./nats-conf.conf:/etc/nats-config/nats.conf
+      - ./nats-jetstream.conf:/etc/nats-config/nats.conf:ro
 
   api:
     build:
       context: .
-      dockerfile: Dockerfile
+      dockerfile: Dockerfile.api
     image: tpcp-api:latest
     container_name: tpcp-server-1
     ports:

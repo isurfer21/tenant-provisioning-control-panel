@@ -71,7 +71,7 @@ Build a multi-tenant SaaS Control Plane that:
 tenant-provisioning-control-plane/
 
 ├── docker-compose.yml
-├── Dockerfile
+├── Dockerfile.api
 ├── Makefile
 ├── README.md
 

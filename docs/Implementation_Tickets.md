@@ -13,7 +13,7 @@ Create repository structure and build system.
 - Go module initialized
 - Folder structure created
 - Makefile added
-- Dockerfile added
+- Dockerfile.api added
 - Service starts successfully
 
 ### Estimate

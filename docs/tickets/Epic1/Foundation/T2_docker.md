@@ -21,7 +21,7 @@ Configure Docker Compose to bring up the entire ecosystem (NATS JetStream, SQLit
 1. `docker-compose.yml` with the following exact services:
    - **nats**: Image `nats:2.10-alpine`. Expose 4222/8222. Map a named volume `nats_data` to ensure JetStream streams persist on restart. Add flags for cluster mode if needed, otherwise single node JetStream is fine.
    - **postgres** (Optional, but Revised scope says SQLite persistent volume so we MUST use a volume for the SQLite file!): Volume `sqlite_data:/var/lib/sqlite/data`. Mount to `/app/data` in container.
-   - **api**: Target your Dockerfile. Depends on nats. ENV vars: `PORT=8080`, `DB_PATH=/app/data/tenant.db`, `NATS_URL=nats://nats:4222`. Port 8080 exposed.
+   - **api**: Target `Dockerfile.api`. Depends on nats. ENV vars: `PORT=8080`, `DB_PATH=/app/data/tenant.db`, `NATS_URL=nats://nats:4222`. Port 8080 exposed.
    - **worker-sim**: Target the worker binary or same Dockerfile with CMD override. Depends on nats. ENV vars: `BROKER_URL=nats://nats:4222`, `FAIL_RATE=0.2`, `MIN_DELAY_MS=500`, `MAX_DELAY_MS=3000`.
 
 ## Deliverables
